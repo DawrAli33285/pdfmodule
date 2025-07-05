@@ -336,46 +336,47 @@ function parseCba(text: string): { transactions: Transaction[]; accountInfo: any
 }
 
 // --- Westpac parser ---
-function parseWestpac(text: string): { transactions: Transaction[] } {
-  const transactions: Transaction[] = [];
+function parseWestpac(text: string): { transactions: Transaction[]; accountInfo: any } {
+  const transactions: Transaction[] = []
+  const accountInfo = {}
 
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
 
-  const dateRegex = /^(\d{2}\/\d{2}\/\d{2,4})/;
+  const dateRegex = /^(\d{2}\/\d{2}\/\d{2,4})/
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const dateMatch = line.match(dateRegex);
+    const line = lines[i]
+    const dateMatch = line.match(dateRegex)
 
     if (dateMatch) {
-      const rawDate = dateMatch[1];
+      const rawDate = dateMatch[1]
 
-      let description = line.substring(rawDate.length).trim();
+      let description = line.substring(rawDate.length).trim()
 
       // Collect multiline description
-      let nextIndex = i + 1;
+      let nextIndex = i + 1
       while (nextIndex < lines.length && !dateRegex.test(lines[nextIndex])) {
-        description += " " + lines[nextIndex];
-        nextIndex++;
+        description += " " + lines[nextIndex]
+        nextIndex++
       }
-      i = nextIndex - 1;
+      i = nextIndex - 1
 
-      const descLower = description.toLowerCase();
+      const descLower = description.toLowerCase()
 
-      const amountMatches = description.match(/[\d,]+\.\d{2}/g);
+      const amountMatches = description.match(/[\d,]+\.\d{2}/g)
 
       if (!amountMatches || amountMatches.length < 2) {
-        continue;
+        continue
       }
 
-      const parsedNumbers = amountMatches.map(s => parseFloat(s.replace(/,/g, "")));
+      const parsedNumbers = amountMatches.map((s) => Number.parseFloat(s.replace(/,/g, "")))
 
-      const transactionAmount = parsedNumbers[0];
+      const transactionAmount = parsedNumbers[0]
 
-      let type: "debit" | "credit" = "debit";
+      let type: "debit" | "credit" = "debit"
 
       if (
         descLower.includes("deposit") ||
@@ -383,17 +384,17 @@ function parseWestpac(text: string): { transactions: Transaction[] } {
         descLower.includes("transfer") ||
         descLower.includes("refund")
       ) {
-        type = "credit";
+        type = "credit"
       }
 
-      const date = normalizeDate(rawDate);
+      const date = normalizeDate(rawDate)
 
       // Make debit negative
-      let signedAmount = transactionAmount;
+      let signedAmount = transactionAmount
       if (type === "debit") {
-        signedAmount = -Math.abs(transactionAmount);
+        signedAmount = -Math.abs(transactionAmount)
       } else {
-        signedAmount = Math.abs(transactionAmount);
+        signedAmount = Math.abs(transactionAmount)
       }
 
       transactions.push({
@@ -402,11 +403,11 @@ function parseWestpac(text: string): { transactions: Transaction[] } {
         description: cleanDescription(description),
         amount: signedAmount,
         type,
-      });
+      })
     }
   }
 
-  return { transactions,  };
+  return { transactions, accountInfo }
 }
 
 // Utility functions
@@ -427,12 +428,14 @@ function normalizeDate(dateStr: string): string {
 }
 
 function cleanDescription(text: string): string {
-  return text
-    // Remove any number patterns like 123.45 or 1,234.56
-    .replace(/[\d,]+\.\d{2}/g, "")
-    // Remove any standalone numbers
-    .replace(/\b\d+\b/g, "")
-    // Collapse extra spaces
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    text
+      // Remove any number patterns like 123.45 or 1,234.56
+      .replace(/[\d,]+\.\d{2}/g, "")
+      // Remove any standalone numbers
+      .replace(/\b\d+\b/g, "")
+      // Collapse extra spaces
+      .replace(/\s+/g, " ")
+      .trim()
+  )
 }
