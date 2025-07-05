@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@basiq/connect-auth": "latest"
+  }
+}
