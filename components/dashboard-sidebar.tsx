@@ -19,7 +19,6 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { motion, AnimatePresence } from "framer-motion"
 
 interface UserProfile {
   id: string
@@ -127,141 +126,150 @@ export function DashboardSidebar() {
 
   const isPremium = user?.subscription?.plan === "premium"
 
+  // Skeleton component for loading state
+  const UserSkeleton = () => (
+    <div className="p-4 border-b border-zinc-800/50">
+      {!isCollapsed ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-zinc-800 rounded-full animate-pulse" />
+            <div className="flex-1 min-w-0">
+              <div className="h-4 bg-zinc-800 rounded animate-pulse mb-2" />
+              <div className="h-3 bg-zinc-800 rounded animate-pulse w-16" />
+            </div>
+          </div>
+          {/* Reserve space for upgrade button */}
+          <div className="h-10 bg-zinc-800 rounded-xl animate-pulse" />
+          <div className="h-3 bg-zinc-800 rounded animate-pulse w-32 mx-auto" />
+        </div>
+      ) : (
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 bg-zinc-800 rounded-full animate-pulse" />
+          <div className="w-10 h-10 bg-zinc-800 rounded-xl animate-pulse" />
+        </div>
+      )}
+    </div>
+  )
+
   return (
-    <motion.div
-      initial={false}
-      animate={{ width: isCollapsed ? 80 : 280 }}
-      transition={{ duration: 0.3, ease: "easeInOut" }}
-      className="fixed left-0 top-0 z-40 h-full bg-black border-r border-zinc-800/50 flex flex-col"
+    <div
+      className="fixed left-0 top-0 z-40 h-full bg-black border-r border-zinc-800/50 flex flex-col transition-all duration-300 ease-in-out"
+      style={{ width: isCollapsed ? "80px" : "280px" }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-6 border-b border-zinc-800/50">
+      <div className="flex items-center justify-between p-6 border-b border-zinc-800/50 min-h-[88px]">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-[#BEF397] to-[#7DD3FC] rounded-xl flex items-center justify-center">
+          <div className="w-10 h-10 bg-gradient-to-br from-[#BEF397] to-[#7DD3FC] rounded-xl flex items-center justify-center flex-shrink-0">
             <Sparkles className="w-5 h-5 text-black" />
           </div>
-          <AnimatePresence mode="wait">
-            {!isCollapsed && (
-              <motion.h1
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-                className="text-[#BEF397] text-2xl font-bold tracking-tight"
-              >
-                moulai.
-              </motion.h1>
-            )}
-          </AnimatePresence>
+          {!isCollapsed && (
+            <h1 className="text-[#BEF397] text-2xl font-bold tracking-tight whitespace-nowrap">moulai.</h1>
+          )}
         </div>
         <Button
           variant="ghost"
           size="icon"
           onClick={handleToggleCollapse}
-          className="text-zinc-400 hover:text-white hover:bg-zinc-800/50 rounded-xl"
+          className="text-zinc-400 hover:text-white hover:bg-zinc-800/50 rounded-xl flex-shrink-0"
         >
           {isCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
         </Button>
       </div>
 
-      {/* User Status & Upgrade Section */}
-      {!loading && user && (
-        <div className="p-4 border-b border-zinc-800/50">
-          {!isCollapsed ? (
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
+      {/* User Status & Upgrade Section - Fixed Height */}
+      <div className="min-h-[140px]">
+        {loading ? (
+          <UserSkeleton />
+        ) : user ? (
+          <div className="p-4 border-b border-zinc-800/50">
+            {!isCollapsed ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] rounded-full flex items-center justify-center flex-shrink-0">
+                    <User className="w-5 h-5 text-black" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white truncate">
+                      {user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : user.email}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      {isPremium ? (
+                        <Badge className="bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] text-black font-semibold text-xs">
+                          <Crown className="w-3 h-3 mr-1" />
+                          Premium
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="border-zinc-600 text-zinc-400 text-xs">
+                          Free Plan
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Upgrade Button for Non-Premium Users - Fixed Height */}
+                <div className="min-h-[52px] flex flex-col justify-center">
+                  {!isPremium && (
+                    <div>
+                      <Button
+                        onClick={handleUpgrade}
+                        className="w-full bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] hover:from-[#BEF397]/90 hover:to-[#7DD3FC]/90 text-black font-semibold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl"
+                      >
+                        <Crown className="w-4 h-4 mr-2" />
+                        <span>Upgrade to Premium</span>
+                        <Zap className="w-4 h-4 ml-2" />
+                      </Button>
+                      <p className="text-xs text-zinc-500 text-center mt-2">Unlock unlimited features</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-3">
                 <div className="w-10 h-10 bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] rounded-full flex items-center justify-center">
                   <User className="w-5 h-5 text-black" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-white truncate">
-                    {user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : user.email}
-                  </p>
-                  <div className="flex items-center gap-2 mt-1">
-                    {isPremium ? (
-                      <Badge className="bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] text-black font-semibold text-xs">
-                        <Crown className="w-3 h-3 mr-1" />
-                        Premium
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="border-zinc-600 text-zinc-400 text-xs">
-                        Free Plan
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Upgrade Button for Non-Premium Users */}
-              {!isPremium && (
-                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+                {!isPremium && (
                   <Button
                     onClick={handleUpgrade}
-                    className="w-full bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] hover:from-[#BEF397]/90 hover:to-[#7DD3FC]/90 text-black font-semibold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl"
+                    size="sm"
+                    className="w-10 h-10 p-0 bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] hover:from-[#BEF397]/90 hover:to-[#7DD3FC]/90 text-black rounded-xl"
+                    title="Upgrade to Premium"
                   >
-                    <Crown className="w-4 h-4 mr-2" />
-                    <span>Upgrade to Premium</span>
-                    <Zap className="w-4 h-4 ml-2" />
+                    <Crown className="w-4 h-4" />
                   </Button>
-                  <p className="text-xs text-zinc-500 text-center mt-2">Unlock unlimited features</p>
-                </motion.div>
-              )}
-            </div>
-          ) : (
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] rounded-full flex items-center justify-center">
-                <User className="w-5 h-5 text-black" />
+                )}
               </div>
-              {!isPremium && (
-                <Button
-                  onClick={handleUpgrade}
-                  size="sm"
-                  className="w-10 h-10 p-0 bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] hover:from-[#BEF397]/90 hover:to-[#7DD3FC]/90 text-black rounded-xl"
-                  title="Upgrade to Premium"
-                >
-                  <Crown className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        ) : (
+          <UserSkeleton />
+        )}
+      </div>
 
-      {/* Upload Statements Button */}
-      <div className="p-4 border-b border-zinc-800/50">
+      {/* Upload Statements Button - Fixed Height */}
+      <div className="p-4 border-b border-zinc-800/50 min-h-[72px] flex items-center">
         <Button
           onClick={handleUploadStatements}
           className={cn(
-            "w-full bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] hover:from-[#BEF397]/90 hover:to-[#7DD3FC]/90 text-black font-semibold rounded-xl transition-all duration-200",
+            "w-full bg-gradient-to-r from-[#BEF397] to-[#7DD3FC] hover:from-[#BEF397]/90 hover:to-[#7DD3FC]/90 text-black font-semibold rounded-xl transition-all duration-200 flex items-center justify-center",
             isCollapsed ? "px-0" : "px-4",
           )}
         >
-          <Upload className="w-5 h-5" />
-          <AnimatePresence>
-            {!isCollapsed && (
-              <motion.span
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: "auto" }}
-                exit={{ opacity: 0, width: 0 }}
-                transition={{ duration: 0.2 }}
-                className="ml-2"
-              >
-                Upload Statements
-              </motion.span>
-            )}
-          </AnimatePresence>
+          <Upload className="w-5 h-5 flex-shrink-0" />
+          {!isCollapsed && <span className="ml-2 whitespace-nowrap">Upload Statements</span>}
         </Button>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-4 space-y-2">
+      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
         <div className="space-y-1">
           {navigationItems.map((item) => {
             const Icon = item.icon
             const isActive = pathname === item.href
 
             return (
-              <motion.button
+              <button
                 key={item.href}
                 onClick={() => handleNavigation(item.href)}
                 className={cn(
@@ -270,50 +278,36 @@ export function DashboardSidebar() {
                     ? "bg-gradient-to-r from-[#BEF397]/20 to-[#7DD3FC]/20 text-white border border-[#BEF397]/30"
                     : "text-zinc-400 hover:text-white hover:bg-zinc-800/50",
                 )}
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
               >
-                <Icon className={cn("w-5 h-5", isActive ? "text-[#BEF397]" : "text-zinc-400 group-hover:text-white")} />
-                <AnimatePresence>
-                  {!isCollapsed && (
-                    <motion.div
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -10 }}
-                      transition={{ duration: 0.2 }}
-                      className="flex-1"
-                    >
-                      <div className="font-medium">{item.title}</div>
-                      <div className="text-xs text-zinc-500 group-hover:text-zinc-400">{item.description}</div>
-                    </motion.div>
+                <Icon
+                  className={cn(
+                    "w-5 h-5 flex-shrink-0",
+                    isActive ? "text-[#BEF397]" : "text-zinc-400 group-hover:text-white",
                   )}
-                </AnimatePresence>
-              </motion.button>
+                />
+                {!isCollapsed && (
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium">{item.title}</div>
+                    <div className="text-xs text-zinc-500 group-hover:text-zinc-400">{item.description}</div>
+                  </div>
+                )}
+              </button>
             )
           })}
         </div>
 
         {/* Settings */}
         <div className="pt-6 border-t border-zinc-800/50">
-          <AnimatePresence>
-            {!isCollapsed && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="px-3 py-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider"
-              >
-                Settings
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {!isCollapsed && (
+            <div className="px-3 py-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Settings</div>
+          )}
           <div className="space-y-1">
             {settingsItems.map((item) => {
               const Icon = item.icon
               const isActive = pathname === item.href
 
               return (
-                <motion.button
+                <button
                   key={item.href}
                   onClick={() => handleNavigation(item.href)}
                   className={cn(
@@ -322,47 +316,40 @@ export function DashboardSidebar() {
                       ? "bg-gradient-to-r from-[#BEF397]/20 to-[#7DD3FC]/20 text-white border border-[#BEF397]/30"
                       : "text-zinc-400 hover:text-white hover:bg-zinc-800/50",
                   )}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
                 >
                   <Icon
-                    className={cn("w-5 h-5", isActive ? "text-[#BEF397]" : "text-zinc-400 group-hover:text-white")}
-                  />
-                  <AnimatePresence>
-                    {!isCollapsed && (
-                      <motion.div
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -10 }}
-                        transition={{ duration: 0.2 }}
-                        className="flex-1"
-                      >
-                        <div className="font-medium">{item.title}</div>
-                        <div className="text-xs text-zinc-500 group-hover:text-zinc-400">{item.description}</div>
-                      </motion.div>
+                    className={cn(
+                      "w-5 h-5 flex-shrink-0",
+                      isActive ? "text-[#BEF397]" : "text-zinc-400 group-hover:text-white",
                     )}
-                  </AnimatePresence>
-                </motion.button>
+                  />
+                  {!isCollapsed && (
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium">{item.title}</div>
+                      <div className="text-xs text-zinc-500 group-hover:text-zinc-400">{item.description}</div>
+                    </div>
+                  )}
+                </button>
               )
             })}
           </div>
         </div>
       </nav>
 
-      {/* Logout */}
-      <div className="p-4 border-t border-zinc-800/50">
+      {/* Logout - Fixed Height */}
+      <div className="p-4 border-t border-zinc-800/50 min-h-[72px] flex items-center">
         <Button
           onClick={handleLogout}
           variant="ghost"
           className={cn(
-            "w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-500/10",
-            isCollapsed && "justify-center px-2",
+            "w-full text-red-400 hover:text-red-300 hover:bg-red-500/10 flex items-center",
+            isCollapsed ? "justify-center px-2" : "justify-start",
           )}
         >
-          <LogOut className={cn("w-5 h-5", !isCollapsed && "mr-3")} />
+          <LogOut className={cn("w-5 h-5 flex-shrink-0", !isCollapsed && "mr-3")} />
           {!isCollapsed && <span>Logout</span>}
         </Button>
       </div>
-    </motion.div>
+    </div>
   )
 }
