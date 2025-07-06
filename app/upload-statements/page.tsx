@@ -31,6 +31,10 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { motion, AnimatePresence } from "framer-motion"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/lib/hooks/useAuth"
+
+// Force dynamic rendering to prevent static generation issues
+export const dynamic = "force-dynamic"
 
 interface ExtractedTransaction {
   id: string
@@ -53,6 +57,7 @@ interface ProcessedFile {
   processingTime?: number
   file?: File
   uploadDate: string
+  transactionCount?: number // Add this field
   metadata?: {
     pageCount: number
     textLength: number
@@ -184,6 +189,14 @@ export default function UploadStatementsPage() {
   const [allTransactions, setAllTransactions] = useState<ExtractedTransaction[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const { user, loading } = useAuth()
+
+  // Redirect if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/auth/signin")
+    }
+  }, [user, loading, router])
 
   // Load file history on component mount
   useEffect(() => {
@@ -200,25 +213,97 @@ export default function UploadStatementsPage() {
 
   // Auto-show bank selection on page load
   useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search)
-    const manageMode = urlParams.get("manage")
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search)
+      const manageMode = urlParams.get("manage")
 
-    if (manageMode === "true") {
-      setShowHistory(true)
-    } else if (!selectedBank) {
-      setShowBankSelection(true)
+      if (manageMode === "true") {
+        setShowHistory(true)
+      } else if (!selectedBank) {
+        setShowBankSelection(true)
+      }
     }
-  }, [])
+  }, [selectedBank])
 
-  // Save file history whenever files change
+  // Save file history whenever files change - with size limits and error handling
   useEffect(() => {
     const completedFiles = files.filter((f) => f.status === "completed")
     if (completedFiles.length > 0) {
-      const updatedHistory = [...fileHistory, ...completedFiles]
-      setFileHistory(updatedHistory)
-      localStorage.setItem("pdf_upload_history", JSON.stringify(updatedHistory))
+      try {
+        // Create lightweight history entries (remove heavy data)
+        const lightweightFiles = completedFiles.map((file) => ({
+          id: file.id,
+          bankName: file.bankName,
+          bankId: file.bankId,
+          status: file.status,
+          uploadDate: file.uploadDate,
+          processingTime: file.processingTime,
+          metadata: file.metadata
+            ? {
+                fileName: file.metadata.fileName,
+                fileSize: file.metadata.fileSize,
+                pageCount: file.metadata.pageCount,
+                textLength: 0, // Don't store large text content
+              }
+            : undefined,
+          transactionCount: file.transactions?.length || 0,
+          // Don't store actual transactions in history - they're in pdf_transactions
+        }))
+
+        // Check if these files are already in history to prevent duplicates
+        const existingIds = new Set(fileHistory.map((f) => f.id))
+        const newFiles = lightweightFiles.filter((f) => !existingIds.has(f.id))
+
+        if (newFiles.length > 0) {
+          const updatedHistory = [...fileHistory, ...newFiles]
+
+          // Limit history to last 50 files to prevent quota issues
+          const limitedHistory = updatedHistory.slice(-50)
+
+          const historyString = JSON.stringify(limitedHistory)
+
+          // Check if we're approaching localStorage limit (5MB typical limit)
+          if (historyString.length > 4 * 1024 * 1024) {
+            // 4MB threshold
+            // Keep only last 25 files if still too large
+            const reducedHistory = limitedHistory.slice(-25)
+            localStorage.setItem("pdf_upload_history", JSON.stringify(reducedHistory))
+            setFileHistory(reducedHistory)
+          } else {
+            localStorage.setItem("pdf_upload_history", JSON.stringify(limitedHistory))
+            setFileHistory(limitedHistory)
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to save file history to localStorage:", error)
+        // If localStorage fails, just keep in memory
+        const lightweightFiles = completedFiles.map((file) => ({
+          id: file.id,
+          bankName: file.bankName,
+          bankId: file.bankId,
+          status: file.status,
+          uploadDate: file.uploadDate,
+          processingTime: file.processingTime,
+          metadata: file.metadata
+            ? {
+                fileName: file.metadata.fileName,
+                fileSize: file.metadata.fileSize,
+                pageCount: file.metadata.pageCount,
+                textLength: 0,
+              }
+            : undefined,
+          transactionCount: file.transactions?.length || 0,
+        }))
+
+        const existingIds = new Set(fileHistory.map((f) => f.id))
+        const newFiles = lightweightFiles.filter((f) => !existingIds.has(f.id))
+
+        if (newFiles.length > 0) {
+          setFileHistory((prev) => [...prev, ...newFiles].slice(-25))
+        }
+      }
     }
-  }, [files])
+  }, [files]) // Remove fileHistory from dependencies to prevent infinite loop
 
   const handleBankSelection = (bank: BankOption) => {
     setSelectedBank(bank)
@@ -568,6 +653,14 @@ export default function UploadStatementsPage() {
     localStorage.setItem("pdf_upload_history", JSON.stringify(updatedHistory))
 
     console.log("✅ File removed and transactions refreshed")
+  }
+
+  if (loading) {
+    return <div className="flex justify-center items-center min-h-screen">Loading...</div>
+  }
+
+  if (!user) {
+    return null
   }
 
   return (
@@ -996,13 +1089,13 @@ export default function UploadStatementsPage() {
                     >
                       <CardContent className="p-4 text-center flex items-center gap-4">
                         <div className="flex items-center gap-4 w-full">
-<div className="w-12 h-12 rounded-xl overflow-hidden shadow-lg flex-shrink-0 bg-zinc-900">
-  <img
-    src={bank.logo}
-    alt={bank.name}
-    className="object-contain w-full h-full"
-  />
-</div>
+                          <div className="w-12 h-12 rounded-xl overflow-hidden shadow-lg flex-shrink-0 bg-zinc-900">
+                            <img
+                              src={bank.logo || "/placeholder.svg"}
+                              alt={bank.name}
+                              className="object-contain w-full h-full"
+                            />
+                          </div>
 
                           <div className="text-left">
                             <h3 className="font-bold text-lg text-white">{bank.name}</h3>
@@ -1016,31 +1109,30 @@ export default function UploadStatementsPage() {
               })}
             </div>
 
-<div className="flex flex-col gap-3">
-  {/* Cancel Button */}
-  <Button
-    variant="outline"
-    onClick={() => setShowBankSelection(false)}
-    className="px-8 py-2 border-zinc-600 text-zinc-300 hover:bg-zinc-800 bg-transparent"
-  >
-    Cancel
-  </Button>
+            <div className="flex flex-col gap-3">
+              {/* Cancel Button */}
+              <Button
+                variant="outline"
+                onClick={() => setShowBankSelection(false)}
+                className="px-8 py-2 border-zinc-600 text-zinc-300 hover:bg-zinc-800 bg-transparent"
+              >
+                Cancel
+              </Button>
 
-  {/* Subtle link with brand color */}
-  <div className="text-center mt-2 text-sm text-zinc-400">
-    Don’t see your bank?{" "}
-    <button
-      onClick={() => {
-        setShowBankSelection(false);
-        router.push("/contact-cpa");
-      }}
-      className="font-medium text-[#BEF397] hover:underline transition"
-    >
-      Send us your statement
-    </button>
-  </div>
-</div>
-
+              {/* Subtle link with brand color */}
+              <div className="text-center mt-2 text-sm text-zinc-400">
+                Don't see your bank?{" "}
+                <button
+                  onClick={() => {
+                    setShowBankSelection(false)
+                    router.push("/contact-cpa")
+                  }}
+                  className="font-medium text-[#BEF397] hover:underline transition"
+                >
+                  Send us your statement
+                </button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
 
@@ -1072,7 +1164,7 @@ export default function UploadStatementsPage() {
             </DialogHeader>
 
             {/* Navigation Buttons - Show when in manage mode */}
-            {new URLSearchParams(window.location.search).get("manage") === "true" && (
+            {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("manage") === "true" && (
               <div className="px-6 pb-4 border-b border-zinc-700">
                 <div className="flex gap-3 justify-center">
                   <Button
@@ -1130,9 +1222,9 @@ export default function UploadStatementsPage() {
                                 <Badge className="bg-[#BEF397]/20 text-[#BEF397] border-[#BEF397]/30 text-xs">
                                   {file.bankName}
                                 </Badge>
-                                {file.transactions && (
+                                {file.transactionCount && (
                                   <Badge className="bg-[#7DD3FC]/20 text-[#7DD3FC] border-[#7DD3FC]/30 text-xs">
-                                    {file.transactions.length} transactions
+                                    {file.transactionCount} transactions
                                   </Badge>
                                 )}
                                 <button
