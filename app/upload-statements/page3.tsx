@@ -1,14 +1,16 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useRef } from "react"
+
+import { useState, useCallback, useEffect } from "react"
 import type React from "react"
+import { useDropzone } from "react-dropzone"
 import { useRouter } from "next/navigation"
 import {
   ArrowLeft,
   Upload,
   CheckCircle,
   AlertCircle,
-  Loader2,
   Trash2,
   Sparkles,
   ChevronRight,
@@ -19,18 +21,21 @@ import {
   CreditCard,
   Landmark,
   Banknote,
-  RefreshCw,
   History,
   X,
+  XCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { motion, AnimatePresence } from "framer-motion"
-import { cn } from "@/lib/utils"
+import { useAuth } from "@/lib/hooks/useAuth"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+
+// Force dynamic rendering to prevent static generation issues
+export const dynamic = "force-dynamic"
 
 interface ExtractedTransaction {
   id: string
@@ -53,6 +58,7 @@ interface ProcessedFile {
   processingTime?: number
   file?: File
   uploadDate: string
+  transactionCount?: number // Add this field
   metadata?: {
     pageCount: number
     textLength: number
@@ -70,11 +76,31 @@ interface BankOption {
   icon: React.ComponentType<any>
 }
 
+interface UploadedFile {
+  id: string
+  file: File
+  bank: string
+  status: "pending" | "processing" | "completed" | "error"
+  progress: number
+  result?: any
+  error?: string
+}
+
+interface Transaction {
+  id: string
+  date: string
+  description: string
+  amount: number
+  type?: "debit" | "credit"
+  balance?: number
+  category?: string
+}
+
 const BANK_OPTIONS: BankOption[] = [
   {
     id: "westpac",
     name: "Westpac",
-    logo: "/logos/westpac.svg",
+    logo: "/placeholder.svg?height=32&width=64&text=Westpac",
     color: "bg-red-50 border-red-200 hover:bg-red-100 hover:border-red-300",
     gradient: "from-red-500 to-red-600",
     icon: Building2,
@@ -82,7 +108,7 @@ const BANK_OPTIONS: BankOption[] = [
   {
     id: "amex",
     name: "American Express",
-    logo: "/logos/amex.svg",
+    logo: "/placeholder.svg?height=32&width=64&text=Amex",
     color: "bg-blue-50 border-blue-200 hover:bg-blue-100 hover:border-blue-300",
     gradient: "from-blue-500 to-blue-600",
     icon: CreditCard,
@@ -90,7 +116,7 @@ const BANK_OPTIONS: BankOption[] = [
   {
     id: "cba",
     name: "CommBank",
-    logo: "/logos/cba.svg",
+    logo: "/placeholder.svg?height=32&width=64&text=CBA",
     color: "bg-yellow-50 border-yellow-200 hover:bg-yellow-100 hover:border-yellow-300",
     gradient: "from-yellow-500 to-yellow-600",
     icon: Banknote,
@@ -98,11 +124,18 @@ const BANK_OPTIONS: BankOption[] = [
   {
     id: "anz",
     name: "ANZ",
-    logo: "/logos/anz.svg",
+    logo: "/placeholder.svg?height=32&width=64&text=ANZ",
     color: "bg-blue-50 border-blue-200 hover:bg-blue-100 hover:border-blue-300",
     gradient: "from-blue-600 to-blue-700",
     icon: Landmark,
   },
+]
+
+const SUPPORTED_BANKS = [
+  { value: "westpac", label: "Westpac" },
+  { value: "cba", label: "Commonwealth Bank" },
+  { value: "anz", label: "ANZ" },
+  { value: "amex", label: "American Express" },
 ]
 
 // Helper functions
@@ -173,17 +206,26 @@ const triggerTransactionRefresh = () => {
 }
 
 export default function UploadStatementsPage() {
+  const { user, loading } = useAuth()
   const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // State management
-  const [selectedBank, setSelectedBank] = useState<BankOption | null>(null)
+  const [selectedBank, setSelectedBank] = useState<string>("")
   const [showBankSelection, setShowBankSelection] = useState(false)
-  const [files, setFiles] = useState<ProcessedFile[]>([])
+  const [files, setFiles] = useState<UploadedFile[]>([])
   const [fileHistory, setFileHistory] = useState<ProcessedFile[]>([])
-  const [allTransactions, setAllTransactions] = useState<ExtractedTransaction[]>([])
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+
+  // Redirect if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/auth/signin")
+    }
+  }, [user, loading, router])
 
   // Load file history on component mount
   useEffect(() => {
@@ -208,17 +250,87 @@ export default function UploadStatementsPage() {
     } else if (!selectedBank) {
       setShowBankSelection(true)
     }
-  }, [])
+  }, [selectedBank])
 
-  // Save file history whenever files change
+  // Save file history whenever files change - with size limits
   useEffect(() => {
     const completedFiles = files.filter((f) => f.status === "completed")
     if (completedFiles.length > 0) {
-      const updatedHistory = [...fileHistory, ...completedFiles]
-      setFileHistory(updatedHistory)
-      localStorage.setItem("pdf_upload_history", JSON.stringify(updatedHistory))
+      try {
+        // Create lightweight history entries (remove heavy data)
+        const lightweightFiles = completedFiles.map((file) => ({
+          id: file.id,
+          bankName: file.bankName,
+          bankId: file.bankId,
+          status: file.status,
+          uploadDate: file.uploadDate,
+          processingTime: file.processingTime,
+          metadata: file.metadata
+            ? {
+                fileName: file.metadata.fileName,
+                fileSize: file.metadata.fileSize,
+                pageCount: file.metadata.pageCount,
+                textLength: 0, // Don't store large text content
+              }
+            : undefined,
+          transactionCount: file.transactions?.length || 0,
+          // Don't store actual transactions in history - they're in pdf_transactions
+        }))
+
+        // Check if these files are already in history to prevent duplicates
+        const existingIds = new Set(fileHistory.map((f) => f.id))
+        const newFiles = lightweightFiles.filter((f) => !existingIds.has(f.id))
+
+        if (newFiles.length > 0) {
+          const updatedHistory = [...fileHistory, ...newFiles]
+
+          // Limit history to last 50 files to prevent quota issues
+          const limitedHistory = updatedHistory.slice(-50)
+
+          const historyString = JSON.stringify(limitedHistory)
+
+          // Check if we're approaching localStorage limit (5MB typical limit)
+          if (historyString.length > 4 * 1024 * 1024) {
+            // 4MB threshold
+            // Keep only last 25 files if still too large
+            const reducedHistory = limitedHistory.slice(-25)
+            localStorage.setItem("pdf_upload_history", JSON.stringify(reducedHistory))
+            setFileHistory(reducedHistory)
+          } else {
+            localStorage.setItem("pdf_upload_history", JSON.stringify(limitedHistory))
+            setFileHistory(limitedHistory)
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to save file history to localStorage:", error)
+        // If localStorage fails, just keep in memory
+        const lightweightFiles = completedFiles.map((file) => ({
+          id: file.id,
+          bankName: file.bankName,
+          bankId: file.bankId,
+          status: file.status,
+          uploadDate: file.uploadDate,
+          processingTime: file.processingTime,
+          metadata: file.metadata
+            ? {
+                fileName: file.metadata.fileName,
+                fileSize: file.metadata.fileSize,
+                pageCount: file.metadata.pageCount,
+                textLength: 0,
+              }
+            : undefined,
+          transactionCount: file.transactions?.length || 0,
+        }))
+
+        const existingIds = new Set(fileHistory.map((f) => f.id))
+        const newFiles = lightweightFiles.filter((f) => !existingIds.has(f.id))
+
+        if (newFiles.length > 0) {
+          setFileHistory((prev) => [...prev, ...newFiles].slice(-25))
+        }
+      }
     }
-  }, [files])
+  }, [files]) // Remove fileHistory from dependencies to prevent infinite loop
 
   const handleBankSelection = (bank: BankOption) => {
     setSelectedBank(bank)
@@ -247,6 +359,34 @@ export default function UploadStatementsPage() {
       processUploadedFile(file)
     }
   }
+
+  const onDrop = useCallback(
+    (acceptedFiles: File[]) => {
+      if (!selectedBank) {
+        alert("Please select a bank first")
+        return
+      }
+
+      const newFiles: UploadedFile[] = acceptedFiles.map((file) => ({
+        id: Math.random().toString(36).substr(2, 9),
+        file,
+        bank: selectedBank,
+        status: "pending",
+        progress: 0,
+      }))
+
+      setFiles((prev) => [...prev, ...newFiles])
+    },
+    [selectedBank],
+  )
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: {
+      "application/pdf": [".pdf"],
+    },
+    multiple: true,
+  })
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -422,6 +562,62 @@ export default function UploadStatementsPage() {
     }
   }
 
+  const processFile = async (fileData: UploadedFile) => {
+    try {
+      // Update status to processing
+      setFiles((prev) => prev.map((f) => (f.id === fileData.id ? { ...f, status: "processing", progress: 10 } : f)))
+
+      const formData = new FormData()
+      formData.append("file", fileData.file)
+      formData.append("bank", fileData.bank)
+
+      console.log("🚀 Uploading file:", fileData.file.name, "for bank:", fileData.bank)
+
+      // Update progress
+      setFiles((prev) => prev.map((f) => (f.id === fileData.id ? { ...f, progress: 50 } : f)))
+
+      const response = await fetch("/api/process-pdf", {
+        method: "POST",
+        body: formData,
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to process PDF")
+      }
+
+      console.log("✅ PDF processed successfully:", result)
+
+      // Update with success
+      setFiles((prev) =>
+        prev.map((f) => (f.id === fileData.id ? { ...f, status: "completed", progress: 100, result } : f)),
+      )
+
+      // Add transactions to the combined list
+      if (result.transactions && result.transactions.length > 0) {
+        setAllTransactions((prev) => [...prev, ...result.transactions])
+      }
+    } catch (error: any) {
+      console.error("❌ Error processing PDF:", error)
+
+      setFiles((prev) =>
+        prev.map((f) => (f.id === fileData.id ? { ...f, status: "error", progress: 0, error: error.message } : f)),
+      )
+    }
+  }
+
+  const processAllFiles = async () => {
+    setIsProcessing(true)
+    const pendingFiles = files.filter((f) => f.status === "pending")
+
+    for (const file of pendingFiles) {
+      await processFile(file)
+    }
+
+    setIsProcessing(false)
+  }
+
   const removeFile = (fileId: string) => {
     const fileToRemove = files.find((f) => f.id === fileId)
     if (fileToRemove?.transactions) {
@@ -431,11 +627,13 @@ export default function UploadStatementsPage() {
     setFiles((prev) => prev.filter((file) => file.id !== fileId))
   }
 
+  const clearAll = () => {
+    setFiles([])
+    setAllTransactions([])
+  }
+
   const clearHistory = () => {
     console.log("🗑️ Clearing all PDF history and transactions...")
-
-    // Get all file IDs from history
-    const fileIds = fileHistory.map((f) => f.id)
 
     // Remove all PDF transactions from localStorage
     const existingTransactions = JSON.parse(localStorage.getItem("pdf_transactions") || "[]")
@@ -468,48 +666,87 @@ export default function UploadStatementsPage() {
 
     console.log("💾 Saving transactions to localStorage...")
 
-    const existingTransactions = JSON.parse(localStorage.getItem("pdf_transactions") || "[]")
-    const newTransactions = allTransactions.map((t, index) => {
-      // Find which file this transaction belongs to
-      const sourceFile = files.find((f) => f.transactions?.some((ft) => ft.id === t.id))
-      const uniqueId = `pdf-${selectedBank?.id}-${Date.now()}-${index}`
-      const balance = typeof t.balance === "number" ? t.balance : typeof t.amount === "number" ? t.amount : 0
-      const trimmedDescription = trimDescription(t.description || "Unknown transaction", 110)
-      const formattedAmount = formatTransactionAmount(t.amount || 0, t.type || "debit")
+    try {
+      const existingTransactions = JSON.parse(localStorage.getItem("pdf_transactions") || "[]")
+      const newTransactions = allTransactions.map((t, index) => {
+        // Find which file this transaction belongs to
+        const sourceFile = files.find((f) => f.transactions?.some((ft) => ft.id === t.id))
+        const uniqueId = `pdf-${selectedBank?.id}-${Date.now()}-${index}`
+        const balance = typeof t.balance === "number" ? t.balance : typeof t.amount === "number" ? t.amount : 0
+        const trimmedDescription = trimDescription(t.description || "Unknown transaction", 110)
+        const formattedAmount = formatTransactionAmount(t.amount || 0, t.type || "debit")
 
-      return {
-        id: uniqueId,
-        description: trimmedDescription,
-        amount: formattedAmount,
-        date: t.date || new Date().toISOString(),
-        category: t.category || "Other",
-        account: `${selectedBank?.name || "PDF"} Statement`,
-        accountId: `pdf-${selectedBank?.id || "unknown"}`,
-        accountNumber: "****",
-        type: t.type || (formattedAmount < 0 ? "debit" : "credit"),
-        balance: balance,
-        source: "pdf-upload",
-        bankType: selectedBank?.id,
-        isBusinessExpense: undefined,
-        deductionAmount: 0,
-        deductionType: undefined,
-        autoClassified: false,
-        pdfFileId: sourceFile?.id, // Add this to track which PDF file the transaction came from
-        pdfFileName: sourceFile?.metadata?.fileName, // Add filename for reference
+        return {
+          id: uniqueId,
+          description: trimmedDescription,
+          amount: formattedAmount,
+          date: t.date || new Date().toISOString(),
+          category: t.category || "Other",
+          account: `${selectedBank?.name || "PDF"} Statement`,
+          accountId: `pdf-${selectedBank?.id || "unknown"}`,
+          accountNumber: "****",
+          type: t.type || (formattedAmount < 0 ? "debit" : "credit"),
+          balance: balance,
+          source: "pdf-upload",
+          bankType: selectedBank?.id,
+          isBusinessExpense: undefined,
+          deductionAmount: 0,
+          deductionType: undefined,
+          autoClassified: false,
+          pdfFileId: sourceFile?.id,
+          pdfFileName: sourceFile?.metadata?.fileName,
+        }
+      })
+
+      const existingIds = new Set(existingTransactions.map((t: any) => t.id))
+      const filteredNewTransactions = newTransactions.filter((t) => !existingIds.has(t.id))
+      const allStoredTransactions = [...existingTransactions, ...filteredNewTransactions]
+
+      localStorage.setItem("pdf_transactions", JSON.stringify(allStoredTransactions))
+
+      // Trigger transaction refresh
+      triggerTransactionRefresh()
+
+      console.log(`✅ Saved ${filteredNewTransactions.length} new transactions`)
+
+      // Force a small delay to ensure localStorage is written
+      setTimeout(() => {
+        router.push("/transactions?source=pdf-upload")
+      }, 100)
+    } catch (error) {
+      console.error("Error saving transactions:", error)
+      alert("Failed to save transactions. Please try again.")
+    }
+  }
+
+  const saveTransactions = async () => {
+    if (allTransactions.length === 0) {
+      alert("No transactions to save")
+      return
+    }
+
+    try {
+      const response = await fetch("/api/transactions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transactions: allTransactions,
+          source: "PDF Upload",
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to save transactions")
       }
-    })
 
-    const existingIds = new Set(existingTransactions.map((t: any) => t.id))
-    const filteredNewTransactions = newTransactions.filter((t) => !existingIds.has(t.id))
-    const allStoredTransactions = [...existingTransactions, ...filteredNewTransactions]
-
-    localStorage.setItem("pdf_transactions", JSON.stringify(allStoredTransactions))
-
-    // Trigger transaction refresh
-    triggerTransactionRefresh()
-
-    console.log(`✅ Saved ${filteredNewTransactions.length} new transactions`)
-    router.push("/transactions?source=pdf-upload")
+      alert(`Successfully saved ${allTransactions.length} transactions!`)
+      router.push("/transactions")
+    } catch (error: any) {
+      console.error("Error saving transactions:", error)
+      alert("Failed to save transactions: " + error.message)
+    }
   }
 
   const completedFiles = files.filter((file) => file.status === "completed")
@@ -549,12 +786,6 @@ export default function UploadStatementsPage() {
       })
 
       console.log(`📊 Transactions before: ${existingTransactions.length}, after: ${filteredTransactions.length}`)
-      console.log(`🔍 Filtering criteria:`, {
-        fileId,
-        fileName: fileToRemove.metadata?.fileName,
-        bankName: fileToRemove.bankName,
-        bankId: fileToRemove.bankId,
-      })
 
       localStorage.setItem("pdf_transactions", JSON.stringify(filteredTransactions))
 
@@ -570,31 +801,31 @@ export default function UploadStatementsPage() {
     console.log("✅ File removed and transactions refreshed")
   }
 
+  if (loading) {
+    return <div className="flex justify-center items-center min-h-screen">Loading...</div>
+  }
+
+  if (!user) {
+    return null
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-black via-zinc-900 to-black relative overflow-hidden">
       {/* Animated background */}
       <div className="absolute inset-0">
-        <motion.div
-          className="absolute rounded-full bg-gradient-to-r from-[#BEF397]/10 to-[#7DD3FC]/10 blur-xl"
+        <div
+          className="absolute rounded-full bg-gradient-to-r from-[#BEF397]/10 to-[#7DD3FC]/10 blur-xl animate-pulse"
           style={{ width: "200px", height: "200px", top: "20%", left: "10%" }}
-          animate={{ x: [0, 50, -50, 0], y: [0, -30, 30, 0] }}
-          transition={{ duration: 10, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }}
         />
-        <motion.div
-          className="absolute rounded-full bg-gradient-to-r from-[#7DD3FC]/10 to-[#BEF397]/10 blur-xl"
-          style={{ width: "150px", height: "150px", top: "60%", right: "15%" }}
-          animate={{ x: [0, -40, 40, 0], y: [0, 40, -40, 0] }}
-          transition={{ duration: 12, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }}
+        <div
+          className="absolute rounded-full bg-gradient-to-r from-[#7DD3FC]/10 to-[#BEF397]/10 blur-xl animate-pulse"
+          style={{ width: "150px", height: "150px", top: "60%", right: "15%", animationDelay: "2s" }}
         />
       </div>
 
       <div className="relative z-10 min-h-screen flex flex-col px-4 py-6">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-center justify-between mb-8"
-        >
+        <div className="flex items-center justify-between mb-8">
           <Button
             onClick={() => router.back()}
             variant="outline"
@@ -619,14 +850,10 @@ export default function UploadStatementsPage() {
             <History className="w-4 h-4 mr-2" />
             Manage PDFs
           </Button>
-        </motion.div>
+        </div>
 
         {/* Security Notice */}
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-2xl mx-auto w-full mb-8"
-        >
+        <div className="max-w-2xl mx-auto w-full mb-8">
           <Alert className="border-green-800/50 bg-green-900/20 backdrop-blur-sm">
             <Shield className="h-4 w-4 text-green-400" />
             <AlertDescription className="text-green-300 text-center">
@@ -634,12 +861,12 @@ export default function UploadStatementsPage() {
               servers.
             </AlertDescription>
           </Alert>
-        </motion.div>
+        </div>
 
         {/* Main Content */}
         <div className="flex-1 max-w-4xl mx-auto w-full">
           {/* Page Title */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-8">
+          <div className="text-center mb-8">
             <h2 className="text-4xl font-bold text-white mb-4">
               {selectedBank ? `Upload ${selectedBank.name} Statements` : "Upload Bank Statements"}
             </h2>
@@ -648,15 +875,10 @@ export default function UploadStatementsPage() {
                 ? `Ready to process your ${selectedBank.name} PDF statements`
                 : "Choose your bank and upload PDF statements to extract transactions"}
             </p>
-          </motion.div>
+          </div>
 
           {/* Bank Selection Section */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="mb-8"
-          >
+          <div className="mb-8">
             <Card className="bg-zinc-900/60 backdrop-blur-2xl border border-zinc-800/50 shadow-2xl">
               <CardHeader>
                 <CardTitle className="text-white flex items-center gap-2">
@@ -665,7 +887,30 @@ export default function UploadStatementsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {selectedBank ? (
+                {/* Bank Selection */}
+                <Card className="mb-6">
+                  <CardHeader>
+                    <CardTitle>Select Your Bank</CardTitle>
+                    <CardDescription>
+                      Choose your bank to ensure proper parsing of your statement format.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Select value={selectedBank} onValueChange={setSelectedBank}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select your bank..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SUPPORTED_BANKS.map((bank) => (
+                          <SelectItem key={bank.value} value={bank.value}>
+                            {bank.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </CardContent>
+                </Card>
+                {/*{selectedBank ? (
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
                       <div className="w-16 h-8 bg-white rounded-lg flex items-center justify-center shadow-lg">
@@ -703,18 +948,14 @@ export default function UploadStatementsPage() {
                       Select Bank
                     </Button>
                   </div>
-                )}
+                )}*/}
               </CardContent>
             </Card>
-          </motion.div>
+          </div>
 
           {/* Stats */}
           {totalTransactions > 0 && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="grid grid-cols-2 gap-4 mb-8 max-w-md mx-auto"
-            >
+            <div className="grid grid-cols-2 gap-4 mb-8 max-w-md mx-auto">
               <div className="bg-zinc-900/60 backdrop-blur-sm border border-zinc-800 rounded-xl px-4 py-3 text-center">
                 <div className="text-xl font-bold text-[#BEF397]">{completedFiles.length}</div>
                 <div className="text-xs text-zinc-400">Files Processed</div>
@@ -723,210 +964,246 @@ export default function UploadStatementsPage() {
                 <div className="text-xl font-bold text-[#7DD3FC]">{totalTransactions}</div>
                 <div className="text-xs text-zinc-400">Transactions</div>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* File Upload Area */}
-          {selectedBank && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="mb-8"
-            >
-              <Card className="bg-gradient-to-br from-zinc-900/80 to-zinc-800/60 backdrop-blur-2xl border border-zinc-700/50 shadow-2xl">
-                <CardContent className="p-10">
-                  <div
-                    className={cn(
-                      "border-2 border-dashed rounded-2xl p-12 text-center transition-all duration-300 cursor-pointer",
-                      isDragOver
-                        ? "border-[#BEF397] bg-[#BEF397]/10 scale-105"
-                        : "border-zinc-600 hover:border-[#BEF397]/70 hover:bg-zinc-800/40",
-                    )}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    onClick={handleFileSelect}
-                  >
-                    <div className="flex flex-col items-center gap-8">
-                      <motion.div
-                        className="w-24 h-24 bg-gradient-to-br from-[#BEF397]/30 to-[#7DD3FC]/30 rounded-full flex items-center justify-center"
-                        whileHover={{ scale: 1.1 }}
-                        transition={{ type: "spring", stiffness: 300 }}
-                      >
-                        <Upload className="w-12 h-12 text-[#BEF397]" />
-                      </motion.div>
-                      <div>
-                        <h3 className="text-3xl font-semibold text-white mb-4">
-                          Upload Your {selectedBank.name} Statement
-                        </h3>
-                        <p className="text-zinc-300 text-lg mb-8 max-w-md mx-auto leading-relaxed">
-                          Drag and drop your PDF file here, or click to browse your files
-                        </p>
-                        <Button
-                          disabled={files.some((f) => f.status === "processing")}
-                          size="lg"
-                          className="h-16 px-12 text-lg font-semibold bg-gradient-to-r from-[#BEF397] to-[#7DD397] text-black hover:shadow-2xl hover:shadow-[#BEF397]/25 disabled:opacity-50 transform hover:scale-105 transition-all duration-300"
-                        >
-                          {files.some((f) => f.status === "processing") ? (
-                            <>
-                              <Loader2 className="w-6 h-6 mr-3 animate-spin" />
-                              Processing PDF...
-                            </>
-                          ) : (
-                            <>
-                              <FileText className="w-6 h-6 mr-3" />
-                              Choose PDF File
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                      <div className="text-zinc-400 space-y-2">
-                        <div className="flex items-center justify-center gap-3 text-sm">
-                          <Shield className="w-4 h-4 text-green-400" />
-                          <span>Secure processing - files are not stored permanently</span>
-                        </div>
-                        <p className="text-sm">Supported: PDF files up to 10MB</p>
-                      </div>
-                    </div>
+          {/* File Upload Area */}
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Upload PDF Statements</CardTitle>
+              <CardDescription>Drag and drop your PDF bank statements here, or click to browse.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div
+                {...getRootProps()}
+                className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                  isDragActive
+                    ? "border-primary bg-primary/5"
+                    : selectedBank
+                      ? "border-gray-300 hover:border-primary"
+                      : "border-gray-200 bg-gray-50 cursor-not-allowed"
+                }`}
+              >
+                <input {...getInputProps()} disabled={!selectedBank} />
+                <Upload className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                {isDragActive ? (
+                  <p className="text-lg">Drop the files here...</p>
+                ) : selectedBank ? (
+                  <div>
+                    <p className="text-lg mb-2">Drag & drop PDF files here, or click to select</p>
+                    <p className="text-sm text-muted-foreground">Supports multiple PDF files up to 10MB each</p>
                   </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          )}
-
-          {/* Onboarding Section - Show when no bank selected */}
-          {!selectedBank && (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-8">
-              <Card className="bg-zinc-900/40 backdrop-blur-sm border border-zinc-800/50 max-w-2xl mx-auto">
-                <CardContent className="p-8">
-                  <div className="w-16 h-16 bg-gradient-to-br from-[#BEF397]/20 to-[#7DD3FC]/20 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Sparkles className="w-8 h-8 text-[#BEF397]" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-white mb-4">Get Started in 3 Easy Steps</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
-                    <div className="text-center">
-                      <div className="w-12 h-12 bg-[#BEF397]/20 rounded-xl flex items-center justify-center mx-auto mb-3">
-                        <span className="text-[#BEF397] font-bold text-lg">1</span>
-                      </div>
-                      <h4 className="text-white font-semibold mb-2">Choose Bank</h4>
-                      <p className="text-zinc-400 text-sm">Select your bank from our supported list</p>
-                    </div>
-                    <div className="text-center">
-                      <div className="w-12 h-12 bg-[#7DD3FC]/20 rounded-xl flex items-center justify-center mx-auto mb-3">
-                        <span className="text-[#7DD3FC] font-bold text-lg">2</span>
-                      </div>
-                      <h4 className="text-white font-semibold mb-2">Upload PDF</h4>
-                      <p className="text-zinc-400 text-sm">Drag & drop your bank statement</p>
-                    </div>
-                    <div className="text-center">
-                      <div className="w-12 h-12 bg-[#BEF397]/20 rounded-xl flex items-center justify-center mx-auto mb-3">
-                        <span className="text-[#BEF397] font-bold text-lg">3</span>
-                      </div>
-                      <h4 className="text-white font-semibold mb-2">Analyze</h4>
-                      <p className="text-zinc-400 text-sm">Review extracted transactions</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          )}
-
-          {/* Hidden File Input */}
-          <input ref={fileInputRef} type="file" accept=".pdf" multiple onChange={handleFileChange} className="hidden" />
+                ) : (
+                  <p className="text-lg text-muted-foreground">Please select a bank first</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
 
           {/* File List */}
-          <AnimatePresence>
-            {files.map((file) => (
-              <motion.div
-                key={file.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="mb-4"
-              >
-                <Card className="bg-zinc-900/40 backdrop-blur-sm border border-zinc-800/30">
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-4">
-                      <div className="flex-shrink-0">
-                        {file.status === "completed" ? (
-                          <CheckCircle className="w-6 h-6 text-green-500" />
-                        ) : file.status === "error" ? (
-                          <AlertCircle className="w-6 h-6 text-red-500" />
-                        ) : (
-                          <Loader2 className="w-6 h-6 text-[#BEF397] animate-spin" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-white font-medium truncate">
-                            {file.metadata?.fileName || `${file.bankName} PDF Statement`}
-                          </p>
-                          <div className="flex items-center gap-2">
-                            {file.status === "completed" && file.transactions && (
-                              <Badge className="bg-[#BEF397]/20 text-[#BEF397] border-[#BEF397]/30">
-                                {file.transactions.length} transactions
-                              </Badge>
+          {files.length > 0 && (
+            <Card className="mb-6">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Uploaded Files</CardTitle>
+                  <CardDescription>{files.length} file(s) ready for processing</CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={processAllFiles}
+                    disabled={isProcessing || files.every((f) => f.status !== "pending")}
+                    className="flex items-center gap-2"
+                  >
+                    {isProcessing ? "Processing..." : "Process All"}
+                  </Button>
+                  <Button variant="outline" onClick={clearAll}>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Clear All
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {files.map((file) => (
+                    <div key={file.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex items-center gap-3 flex-1">
+                        <FileText className="h-8 w-8 text-blue-500" />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="font-medium">{file.file.name}</p>
+                            <Badge variant="secondary">{file.bank.toUpperCase()}</Badge>
+                            {file.status === "completed" && <CheckCircle className="h-4 w-4 text-green-500" />}
+                            {file.status === "error" && <XCircle className="h-4 w-4 text-red-500" />}
+                            {file.status === "processing" && (
+                              <AlertCircle className="h-4 w-4 text-blue-500 animate-spin" />
                             )}
-                            {file.metadata && (
-                              <Badge className="bg-[#7DD3FC]/20 text-[#7DD3FC] border-[#7DD3FC]/30">
-                                {formatFileSize(file.metadata.fileSize)}
-                              </Badge>
-                            )}
-                            <button
-                              onClick={() => removeFile(file.id)}
-                              className="text-zinc-400 hover:text-red-400 transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
                           </div>
+                          <p className="text-sm text-muted-foreground">
+                            {(file.file.size / 1024 / 1024).toFixed(2)} MB
+                          </p>
+                          {file.status === "processing" && <Progress value={file.progress} className="mt-2" />}
+                          {file.status === "completed" && file.result && (
+                            <p className="text-sm text-green-600 mt-1">
+                              ✅ Found {file.result.transactionCount} transactions
+                            </p>
+                          )}
+                          {file.status === "error" && <p className="text-sm text-red-600 mt-1">❌ {file.error}</p>}
                         </div>
-                        <div className="flex items-center gap-2 text-sm text-zinc-400">
-                          <span>{file.bankName} PDF</span>
-                          {file.status === "processing" && (
-                            <>
-                              <span>•</span>
-                              <span className="text-[#BEF397]">Processing {Math.round(file.progress)}%</span>
-                            </>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeFile(file.id)}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Transaction Summary */}
+          {allTransactions.length > 0 && (
+            <Card className="mb-6">
+              <CardHeader>
+                <CardTitle>Extracted Transactions</CardTitle>
+                <CardDescription>
+                  {allTransactions.length} transactions found across all uploaded statements
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                  <div className="text-center p-4 bg-green-50 rounded-lg">
+                    <p className="text-2xl font-bold text-green-600">
+                      {allTransactions.filter((t) => t.amount > 0).length}
+                    </p>
+                    <p className="text-sm text-green-600">Credits</p>
+                  </div>
+                  <div className="text-center p-4 bg-red-50 rounded-lg">
+                    <p className="text-2xl font-bold text-red-600">
+                      {allTransactions.filter((t) => t.amount < 0).length}
+                    </p>
+                    <p className="text-sm text-red-600">Debits</p>
+                  </div>
+                  <div className="text-center p-4 bg-blue-50 rounded-lg">
+                    <p className="text-2xl font-bold text-blue-600">
+                      ${Math.abs(allTransactions.reduce((sum, t) => sum + t.amount, 0)).toFixed(2)}
+                    </p>
+                    <p className="text-sm text-blue-600">Total Volume</p>
+                  </div>
+                </div>
+
+                <div className="flex justify-center">
+                  <Button onClick={saveTransactions} className="flex items-center gap-2">
+                    <CheckCircle className="h-4 w-4" />
+                    Save {allTransactions.length} Transactions
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Help Section */}
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              <strong>Tips for best results:</strong>
+              <ul className="mt-2 space-y-1 text-sm">
+                <li>• Ensure PDFs are clear and not password-protected</li>
+                <li>• Select the correct bank for proper parsing</li>
+                <li>• Upload recent statements for the most accurate categorization</li>
+                <li>• Review transactions before saving to your account</li>
+              </ul>
+            </AlertDescription>
+          </Alert>
+
+          {/* Hidden File Input */}
+          <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileChange} className="hidden" />
+
+          {/* File List */}
+          {/*{files.map((file) => (
+            <div key={file.id} className="mb-4">
+              <Card className="bg-zinc-900/40 backdrop-blur-sm border border-zinc-800/30">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-4">
+                    <div className="flex-shrink-0">
+                      {file.status === "completed" ? (
+                        <CheckCircle className="w-6 h-6 text-green-500" />
+                      ) : file.status === "error" ? (
+                        <AlertCircle className="w-6 h-6 text-red-500" />
+                      ) : (
+                        <Loader2 className="w-6 h-6 text-[#BEF397] animate-spin" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-white font-medium truncate">
+                          {file.metadata?.fileName || `${file.bankName} PDF Statement`}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          {file.status === "completed" && file.transactions && (
+                            <Badge className="bg-[#BEF397]/20 text-[#BEF397] border-[#BEF397]/30">
+                              {file.transactions.length} transactions
+                            </Badge>
                           )}
-                          {file.status === "completed" && (
-                            <>
-                              <span>•</span>
-                              <span className="text-green-500">Complete</span>
-                              {file.processingTime && (
-                                <>
-                                  <span>•</span>
-                                  <span>{formatProcessingTime(file.processingTime)}</span>
-                                </>
-                              )}
-                            </>
+                          {file.metadata && (
+                            <Badge className="bg-[#7DD3FC]/20 text-[#7DD3FC] border-[#7DD3FC]/30">
+                              {formatFileSize(file.metadata.fileSize)}
+                            </Badge>
                           )}
-                          {file.status === "error" && (
-                            <>
-                              <span>•</span>
-                              <span className="text-red-400">Failed</span>
-                            </>
-                          )}
+                          <button
+                            onClick={() => removeFile(file.id)}
+                            className="text-zinc-400 hover:text-red-400 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
-                        {file.status === "processing" && <Progress value={file.progress} className="mt-2 h-2" />}
-                        {file.status === "error" && file.error && (
-                          <p className="text-red-400 text-sm mt-1">{file.error}</p>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                        <span>{file.bankName} PDF</span>
+                        {file.status === "processing" && (
+                          <>
+                            <span>•</span>
+                            <span className="text-[#BEF397]">Processing {Math.round(file.progress)}%</span>
+                          </>
+                        )}
+                        {file.status === "completed" && (
+                          <>
+                            <span>•</span>
+                            <span className="text-green-500">Complete</span>
+                            {file.processingTime && (
+                              <>
+                                <span>•</span>
+                                <span>{formatProcessingTime(file.processingTime)}</span>
+                              </>
+                            )}
+                          </>
+                        )}
+                        {file.status === "error" && (
+                          <>
+                            <span>•</span>
+                            <span className="text-red-400">Failed</span>
+                          </>
                         )}
                       </div>
+                      {file.status === "processing" && <Progress value={file.progress} className="mt-2 h-2" />}
+                      {file.status === "error" && file.error && (
+                        <p className="text-red-400 text-sm mt-1">{file.error}</p>
+                      )}
                     </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            ))}
-          </AnimatePresence>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ))}*/}
 
           {/* Success Message */}
           {completedFiles.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-center mt-8 mb-24"
-            >
+            <div className="text-center mt-8 mb-24">
               <Card className="bg-green-900/20 border border-green-500/30 max-w-md mx-auto">
                 <CardContent className="p-6">
                   <div className="flex items-center justify-center gap-3 mb-4">
@@ -942,16 +1219,12 @@ export default function UploadStatementsPage() {
                   </p>
                 </CardContent>
               </Card>
-            </motion.div>
+            </div>
           )}
 
           {/* Floating Proceed Button */}
           {canContinue && (
-            <motion.div
-              initial={{ opacity: 0, y: 100 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="fixed bottom-6 left-0 right-0 z-50 flex justify-center px-4"
-            >
+            <div className="fixed bottom-6 left-0 right-0 z-50 flex justify-center px-4">
               <Button
                 onClick={handleContinue}
                 size="lg"
@@ -961,7 +1234,7 @@ export default function UploadStatementsPage() {
                 View {totalTransactions} Transactions
                 <ChevronRight className="ml-3 w-6 h-6" />
               </Button>
-            </motion.div>
+            </div>
           )}
         </div>
 
@@ -979,30 +1252,22 @@ export default function UploadStatementsPage() {
             </DialogHeader>
 
             <div className="grid grid-cols-1 gap-4 py-4">
-              {BANK_OPTIONS.map((bank, index) => {
-                const IconComponent = bank.icon
+              {BANK_OPTIONS.map((bank) => {
                 return (
-                  <motion.div
-                    key={bank.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.1 }}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                  >
+                  <div key={bank.id}>
                     <Card
-                      className="cursor-pointer transition-all duration-300 bg-zinc-800/50 border-zinc-700 hover:bg-zinc-700/50 hover:border-[#BEF397]/50 shadow-lg hover:shadow-xl"
+                      className="cursor-pointer transition-all duration-300 bg-zinc-800/50 border-zinc-700 hover:bg-zinc-700/50 hover:border-[#BEF397]/50 shadow-lg hover:shadow-xl hover:scale-105"
                       onClick={() => handleBankSelection(bank)}
                     >
                       <CardContent className="p-4 text-center flex items-center gap-4">
                         <div className="flex items-center gap-4 w-full">
-<div className="w-12 h-12 rounded-xl overflow-hidden shadow-lg flex-shrink-0 bg-zinc-900">
-  <img
-    src={bank.logo}
-    alt={bank.name}
-    className="object-contain w-full h-full"
-  />
-</div>
+                          <div className="w-12 h-12 rounded-xl overflow-hidden shadow-lg flex-shrink-0 bg-zinc-900">
+                            <img
+                              src={bank.logo || "/placeholder.svg"}
+                              alt={bank.name}
+                              className="object-contain w-full h-full"
+                            />
+                          </div>
 
                           <div className="text-left">
                             <h3 className="font-bold text-lg text-white">{bank.name}</h3>
@@ -1011,36 +1276,33 @@ export default function UploadStatementsPage() {
                         </div>
                       </CardContent>
                     </Card>
-                  </motion.div>
+                  </div>
                 )
               })}
             </div>
 
-<div className="flex flex-col gap-3">
-  {/* Cancel Button */}
-  <Button
-    variant="outline"
-    onClick={() => setShowBankSelection(false)}
-    className="px-8 py-2 border-zinc-600 text-zinc-300 hover:bg-zinc-800 bg-transparent"
-  >
-    Cancel
-  </Button>
+            <div className="flex flex-col gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setShowBankSelection(false)}
+                className="px-8 py-2 border-zinc-600 text-zinc-300 hover:bg-zinc-800 bg-transparent"
+              >
+                Cancel
+              </Button>
 
-  {/* Subtle link with brand color */}
-  <div className="text-center mt-2 text-sm text-zinc-400">
-    Don’t see your bank?{" "}
-    <button
-      onClick={() => {
-        setShowBankSelection(false);
-        router.push("/contact-cpa");
-      }}
-      className="font-medium text-[#BEF397] hover:underline transition"
-    >
-      Send us your statement
-    </button>
-  </div>
-</div>
-
+              <div className="text-center mt-2 text-sm text-zinc-400">
+                Don't see your bank?{" "}
+                <button
+                  onClick={() => {
+                    setShowBankSelection(false)
+                    router.push("/contact-cpa")
+                  }}
+                  className="font-medium text-[#BEF397] hover:underline transition"
+                >
+                  Send us your statement
+                </button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
 
@@ -1072,7 +1334,7 @@ export default function UploadStatementsPage() {
             </DialogHeader>
 
             {/* Navigation Buttons - Show when in manage mode */}
-            {new URLSearchParams(window.location.search).get("manage") === "true" && (
+            {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("manage") === "true" && (
               <div className="px-6 pb-4 border-b border-zinc-700">
                 <div className="flex gap-3 justify-center">
                   <Button
@@ -1130,9 +1392,9 @@ export default function UploadStatementsPage() {
                                 <Badge className="bg-[#BEF397]/20 text-[#BEF397] border-[#BEF397]/30 text-xs">
                                   {file.bankName}
                                 </Badge>
-                                {file.transactions && (
+                                {file.transactionCount && (
                                   <Badge className="bg-[#7DD3FC]/20 text-[#7DD3FC] border-[#7DD3FC]/30 text-xs">
-                                    {file.transactions.length} transactions
+                                    {file.transactionCount} transactions
                                   </Badge>
                                 )}
                                 <button

@@ -5,13 +5,13 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "@/components/ui/toaster"
 import { SupportChatbox } from "@/components/support-chatbox"
+import { AuthProvider } from "@/lib/hooks/useAuth"
 
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "Moulai - Tax Deduction Tracker",
   description: "Automatically track and categorize your tax deductions with AI-powered transaction analysis",
-    generator: 'v0.dev'
 }
 
 export default function RootLayout({
@@ -23,9 +23,11 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
-          {children}
-          <SupportChatbox />
-          <Toaster />
+          <AuthProvider>
+            {children}
+            <SupportChatbox />
+            <Toaster />
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>
