@@ -1,4 +1,15 @@
 import { NextResponse } from "next/server"
+import { v4 as uuidv4 } from "uuid"
+
+interface Transaction {
+  id: string
+  date: string
+  description: string
+  amount: number
+  type?: "debit" | "credit"
+  balance?: number
+  category?: string
+}
 
 export async function POST(req: Request) {
   console.log("🚀 PDF Parser API: POST request received at", new Date().toISOString())
@@ -33,41 +44,14 @@ export async function POST(req: Request) {
     const buffer = Buffer.from(dataBuffer)
     console.log(`📦 Read ${buffer.length} bytes from PDF`)
 
-    // Safety check - ensure we're only working with the uploaded buffer
-    if (!buffer || buffer.length === 0) {
-      throw new Error("Invalid PDF file - no data received")
-    }
-
-    // Verify it's actually a PDF by checking magic bytes
-    const pdfHeader = buffer.slice(0, 4).toString()
-    if (!pdfHeader.startsWith("%PDF")) {
-      throw new Error("Invalid PDF file - not a valid PDF format")
-    }
-
-    // Import pdf-parse with explicit options to prevent test file access
-    let pdfData
-    try {
-      const pdfParse = (await import("pdf-parse")).default
-
-      // Explicitly pass only the buffer with strict options
-      pdfData = await pdfParse(buffer, {
-        // Disable any file system access
-        max: 0, // Parse all pages
-        version: "v1.10.100", // Specify version to avoid auto-detection
-        // Ensure no external file references
-        normalizeWhitespace: false,
-        disableCombineTextItems: false,
-      })
-    } catch (parseError) {
-      console.error("PDF Parse Error:", parseError)
-      throw new Error("Failed to parse PDF file. Please ensure it's a valid PDF.")
-    }
+    const pdfParse = (await import("pdf-parse")).default
+    const pdfData = await pdfParse(buffer)
 
     const fullText = pdfData.text
     console.log(`📊 Extracted ${fullText.length} characters from ${pdfData.numpages} pages`)
 
     // Parse transactions based on bank
-    let transactions: any[] = []
+    let transactions: Transaction[] = []
     let accountInfo = {}
 
     switch (bank.toLowerCase()) {
@@ -151,10 +135,10 @@ export async function GET() {
   return NextResponse.json(response, { status: 200 })
 }
 
-// --- Amex parser ---
-function parseAmex(text: string): { transactions: any[]; accountInfo: any } {
+// --- Amex parser based on your provided script ---
+function parseAmex(text: string): { transactions: Transaction[]; accountInfo: any } {
   console.log("🔍 AMEX Parser: Starting...")
-  const transactions: any[] = []
+  const transactions: Transaction[] = []
   const lines = text
     .split("\n")
     .map((line) => line.trim())
@@ -207,9 +191,10 @@ function parseAmex(text: string): { transactions: any[]; accountInfo: any } {
         const nextLine = lines[i + j]
         const amountMatch = nextLine.match(/^(-?\d+\.\d{2})$/)
         if (amountMatch) {
-          amount = Math.abs(Number.parseFloat(amountMatch[1]))
+          // FIXED: Store the actual amount without forcing it to be negative
+          amount = Math.abs(Number.parseFloat(amountMatch[1])) // Use absolute value for expenses
           console.log(`💰 AMEX Parser: Found amount: ${amountMatch[1]} -> ${amount}`)
-          i += j
+          i += j // skip to the amount line
           break
         }
       }
@@ -218,7 +203,7 @@ function parseAmex(text: string): { transactions: any[]; accountInfo: any } {
         transactionCount++
         console.log(`✅ AMEX Parser: Adding transaction ${transactionCount}`)
         transactions.push({
-          id: `amex-${Date.now()}-${transactionCount}`,
+          id: uuidv4(),
           date: dateStr,
           description,
           amount,
@@ -234,21 +219,22 @@ function parseAmex(text: string): { transactions: any[]; accountInfo: any } {
 }
 
 // --- ANZ parser ---
-function parseAnz(text: string): { transactions: any[]; accountInfo: any } {
+function parseAnz(text: string): { transactions: Transaction[]; accountInfo: any } {
   console.log("🔍 ANZ Parser: Starting...")
-  const transactions: any[] = []
+  const transactions: Transaction[] = []
   const accountInfo = {}
 
+  // Regex to parse ANZ transactions (adapted from uploaded file)
   const pattern = new RegExp(
     [
       "(",
-      "(\\d{2}/\\d{2}/\\d{4})\\s+",
-      "(\\d{2}/\\d{2}/\\d{4})\\s+",
-      "(\\d{4})\\s+",
-      "(.*?)\\s+",
-      "\\$?([\\d,]+\\.\\d{2})\\s*",
-      "(CR)?\\s+",
-      "\\$?([\\d,]+\\.\\d{2})",
+      "(\\d{2}/\\d{2}/\\d{4})\\s+", // date_processed
+      "(\\d{2}/\\d{2}/\\d{4})\\s+", // date_transaction
+      "(\\d{4})\\s+", // card
+      "(.*?)\\s+", // description
+      "\\$?([\\d,]+\\.\\d{2})\\s*", // amount
+      "(CR)?\\s+", // credit_label
+      "\\$?([\\d,]+\\.\\d{2})", // balance
       ")",
     ].join(""),
     "g",
@@ -262,7 +248,7 @@ function parseAnz(text: string): { transactions: any[]; accountInfo: any } {
     matchCount++
     console.log(`📋 ANZ Parser: Match ${matchCount} found`)
 
-    const rawDate = match[2]
+    const rawDate = match[2] // date_transaction
     const [day, month, year] = rawDate.split("/")
     const dateIso = `${year}-${month}-${day}`
 
@@ -272,10 +258,11 @@ function parseAnz(text: string): { transactions: any[]; accountInfo: any } {
     const creditLabel = match[7]
     const description = match[5].trim()
 
+    // FIXED: Store positive amounts for expenses, negative for credits
     const signedAmount = creditLabel ? -amount : amount
 
     transactions.push({
-      id: `anz-${Date.now()}-${matchCount}`,
+      id: uuidv4(),
       date: dateIso,
       description,
       amount: signedAmount,
@@ -287,9 +274,9 @@ function parseAnz(text: string): { transactions: any[]; accountInfo: any } {
 }
 
 // --- CBA parser ---
-function parseCba(text: string): { transactions: any[]; accountInfo: any } {
+function parseCba(text: string): { transactions: Transaction[]; accountInfo: any } {
   console.log("🔍 CBA Parser: Starting...")
-  const transactions: any[] = []
+  const transactions: Transaction[] = []
   const accountInfo = {}
 
   const lines = text
@@ -307,6 +294,7 @@ function parseCba(text: string): { transactions: any[]; accountInfo: any } {
     if (line.includes("OPENING BALANCE") || line.includes("CLOSING BALANCE")) {
       console.log(`📋 CBA Parser: Found balance line: "${line}"`)
 
+      // Extract the date, example: "22 Jan 2022 OPENING BALANCE Nil"
       const dateMatch = line.match(/^(\d{1,2})\s+([A-Za-z]+)\s*(\d{4})?/)
       if (dateMatch) {
         const day = dateMatch[1].padStart(2, "0")
@@ -335,7 +323,7 @@ function parseCba(text: string): { transactions: any[]; accountInfo: any } {
 
       console.log(`✅ CBA Parser: Adding balance transaction`)
       transactions.push({
-        id: `cba-${Date.now()}-${Math.random()}`,
+        id: uuidv4(),
         date,
         description,
         amount,
@@ -348,50 +336,46 @@ function parseCba(text: string): { transactions: any[]; accountInfo: any } {
 }
 
 // --- Westpac parser ---
-function parseWestpac(text: string): { transactions: any[]; accountInfo: any } {
-  console.log("🔍 Westpac Parser: Starting...")
-  const transactions: any[] = []
-  const accountInfo = {}
+function parseWestpac(text: string): { transactions: Transaction[] } {
+  const transactions: Transaction[] = [];
 
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
+    .filter(Boolean);
 
-  console.log(`📄 Westpac Parser: Processing ${lines.length} lines`)
-
-  const dateRegex = /^(\d{2}\/\d{2}\/\d{2,4})/
+  const dateRegex = /^(\d{2}\/\d{2}\/\d{2,4})/;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const dateMatch = line.match(dateRegex)
+    const line = lines[i];
+    const dateMatch = line.match(dateRegex);
 
     if (dateMatch) {
-      const rawDate = dateMatch[1]
+      const rawDate = dateMatch[1];
 
-      let description = line.substring(rawDate.length).trim()
+      let description = line.substring(rawDate.length).trim();
 
       // Collect multiline description
-      let nextIndex = i + 1
+      let nextIndex = i + 1;
       while (nextIndex < lines.length && !dateRegex.test(lines[nextIndex])) {
-        description += " " + lines[nextIndex]
-        nextIndex++
+        description += " " + lines[nextIndex];
+        nextIndex++;
       }
-      i = nextIndex - 1
+      i = nextIndex - 1;
 
-      const descLower = description.toLowerCase()
+      const descLower = description.toLowerCase();
 
-      const amountMatches = description.match(/[\d,]+\.\d{2}/g)
+      const amountMatches = description.match(/[\d,]+\.\d{2}/g);
 
       if (!amountMatches || amountMatches.length < 2) {
-        continue
+        continue;
       }
 
-      const parsedNumbers = amountMatches.map((s) => Number.parseFloat(s.replace(/,/g, "")))
+      const parsedNumbers = amountMatches.map(s => parseFloat(s.replace(/,/g, "")));
 
-      const transactionAmount = parsedNumbers[0]
+      const transactionAmount = parsedNumbers[0];
 
-      let type: "debit" | "credit" = "debit"
+      let type: "debit" | "credit" = "debit";
 
       if (
         descLower.includes("deposit") ||
@@ -399,36 +383,36 @@ function parseWestpac(text: string): { transactions: any[]; accountInfo: any } {
         descLower.includes("transfer") ||
         descLower.includes("refund")
       ) {
-        type = "credit"
+        type = "credit";
       }
 
-      const date = normalizeDate(rawDate)
+      const date = normalizeDate(rawDate);
 
       // Make debit negative
-      let signedAmount = transactionAmount
+      let signedAmount = transactionAmount;
       if (type === "debit") {
-        signedAmount = -Math.abs(transactionAmount)
+        signedAmount = -Math.abs(transactionAmount);
       } else {
-        signedAmount = Math.abs(transactionAmount)
+        signedAmount = Math.abs(transactionAmount);
       }
 
       transactions.push({
-        id: `westpac-${Date.now()}-${i}`,
+        id: uuidv4(),
         date,
         description: cleanDescription(description),
         amount: signedAmount,
         type,
-      })
+      });
     }
   }
 
-  console.log(`✅ Westpac Parser: Completed. Found ${transactions.length} transactions`)
-  return { transactions, accountInfo }
+  return { transactions,  };
 }
 
 // Utility functions
 function normalizeDate(dateStr: string): string {
   try {
+    // Handle DD/MM/YYYY or DD/MM/YY format
     const parts = dateStr.split("/")
     let year = parts[2]
     if (year.length === 2) {
@@ -444,8 +428,11 @@ function normalizeDate(dateStr: string): string {
 
 function cleanDescription(text: string): string {
   return text
+    // Remove any number patterns like 123.45 or 1,234.56
     .replace(/[\d,]+\.\d{2}/g, "")
+    // Remove any standalone numbers
     .replace(/\b\d+\b/g, "")
+    // Collapse extra spaces
     .replace(/\s+/g, " ")
-    .trim()
+    .trim();
 }

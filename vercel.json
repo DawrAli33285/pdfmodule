@@ -1,0 +1,10 @@
+{
+  "build": {
+    "env": {
+      "NODE_ENV": "production"
+    }
+  },
+  "includeFiles": [
+    "data/05-versions-space.pdf"
+  ]
+}
